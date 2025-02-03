@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -12,10 +12,8 @@ using AdvancedSharpAdbClient.Receivers;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Console;
 
-
 class AndroidSMSBackup
 {
-    static Dictionary<string, string> contactsCache = new Dictionary<string, string>();
     static readonly string adbPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Tools", "ADB", "adb.exe");
     static readonly ILogger<AndroidSMSBackup> Logger = LoggerFactory.Create(builder => builder.AddConsole().AddFile("logs/app-{Date}.txt")).CreateLogger<AndroidSMSBackup>();
 
@@ -51,7 +49,6 @@ class AndroidSMSBackup
             Logger.LogInformation("Appareil détecté : {Model}", device.Model);
 
             string backupPath = CreateBackupFolder();
-            LoadContacts(adbClient, device);
             BackupSMS(adbClient, device, backupPath);
         }
         catch (AdbException adbEx)
@@ -116,32 +113,6 @@ class AndroidSMSBackup
         }
     }
 
-    static void LoadContacts(AdbClient adbClient, DeviceData device)
-    {
-        try
-        {
-            var receiver = new ConsoleOutputReceiver();
-            adbClient.ExecuteRemoteCommand("content query --uri content://contacts/phones --projection display_name:number", device, receiver);
-            string output = receiver.ToString();
-
-            var contactEntries = output.Split(new[] { "Row:" }, StringSplitOptions.RemoveEmptyEntries);
-            foreach (var entry in contactEntries)
-            {
-                var name = ExtractValue(entry, "display_name");
-                var number = ExtractValue(entry, "number");
-                if (!string.IsNullOrEmpty(number))
-                {
-                    contactsCache[NormalizePhoneNumber(number)] = name;
-                }
-            }
-            Logger.LogInformation("Contacts chargés avec succès. Nombre de contacts : {Count}", contactsCache.Count);
-        }
-        catch (Exception ex)
-        {
-            Logger.LogError(ex, "Erreur lors du chargement des contacts : {Message}", ex.Message);
-        }
-    }
-
     static string CreateBackupFolder()
     {
         try
@@ -174,7 +145,7 @@ class AndroidSMSBackup
             adbClient.ExecuteRemoteCommand("content query --uri content://sms", device, receiver);
 
             string output = receiver.ToString();
-            var formattedSMS = FormatSMS(output);
+            string formattedSMS = FormatSMS(output);
 
             File.WriteAllText(backupFile, formattedSMS, Encoding.UTF8);
             Logger.LogInformation("Sauvegarde réussie : {BackupFile}", backupFile);
@@ -199,7 +170,7 @@ class AndroidSMSBackup
             var date = ExtractValue(entry, "date");
             var address = ExtractValue(entry, "address");
             var type = ExtractValue(entry, "type");
-            var body = ExtractFullBody(entry);
+            var body = ExtractFullBody(entry); // Utilisation de la fonction améliorée
 
             if (!string.IsNullOrEmpty(date) && !string.IsNullOrEmpty(address))
             {
@@ -207,11 +178,10 @@ class AndroidSMSBackup
                 var formattedDate = dateTime.ToString("yyyy-MM-dd");
                 var formattedTime = dateTime.ToString("HH:mm:ss");
                 var direction = type == "1" ? "De" : "À";
-                var contactName = GetContactName(address);
 
                 formattedOutput.AppendLine($"Date: {formattedDate}");
                 formattedOutput.AppendLine($"Heure: {formattedTime}");
-                formattedOutput.AppendLine($"{direction}: {contactName} ({address})");
+                formattedOutput.AppendLine($"{direction}: {address}");
                 formattedOutput.AppendLine($"Message: {body}");
                 formattedOutput.AppendLine();
             }
@@ -228,22 +198,20 @@ class AndroidSMSBackup
 
     static string ExtractFullBody(string input)
     {
-        var match = Regex.Match(input, @"body=(.+)(?=, sub_id=|$)", RegexOptions.Singleline);
+        // Recherche du body entre guillemets
+        var match = Regex.Match(input, @"body=""([^""]*)""", RegexOptions.Singleline);
         if (match.Success)
         {
-            return match.Groups[1].Value.Trim().Trim('"');
+            return match.Groups[1].Value;
         }
+
+        // Si pas de guillemets, on capture jusqu'à la prochaine virgule ou fin de ligne
+        match = Regex.Match(input, @"body=([^,\n]*)", RegexOptions.Singleline);
+        if (match.Success)
+        {
+            return match.Groups[1].Value;
+        }
+
         return string.Empty;
-    }
-
-    static string GetContactName(string phoneNumber)
-    {
-        string normalizedNumber = NormalizePhoneNumber(phoneNumber);
-        return contactsCache.TryGetValue(normalizedNumber, out string name) ? name : phoneNumber;
-    }
-
-    static string NormalizePhoneNumber(string phoneNumber)
-    {
-        return Regex.Replace(phoneNumber, @"[^\d]", "");
     }
 }
